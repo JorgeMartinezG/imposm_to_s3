@@ -1,0 +1,10 @@
+[tables]
+"asp_trs_roads_osm" = ["SYR"]
+
+[connection]
+host = ""
+port = 5432
+user = ""
+password = ""
+schema = "osmeditor"
+name = "osm"
