@@ -103,14 +103,13 @@ async fn put_s3(path: &String, zip_path: &str) -> Result<(), S3Error> {
 
     println!("{:?}", bucket);
 
-    let mut f = File::open(zip_path).expect("Failed openning");
+    let mut f = tokio::fs::File::open(zip_path)
+        .await
+        .expect("Failed openning");
 
     //println!("{}-{}", path, zip_path);
 
-    let test = b"I'm going to S3!";
-    let response_data = bucket.put_object(path, test).await?;
-
-    //let response_data = bucket.put_object_stream(&mut f, path).unwrap();
+    let response_data = bucket.put_object_stream(&mut f, path).await?;
 
     println!("{:?}", response_data);
 
