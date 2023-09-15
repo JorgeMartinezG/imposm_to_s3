@@ -1,3 +1,7 @@
+use s3::creds::Credentials;
+use s3::error::S3Error;
+use s3::Bucket;
+
 use std::collections::HashMap;
 use std::fs::read_to_string;
 use std::fs::File;
@@ -66,7 +70,7 @@ fn zip_dir<T>(
 where
     T: Write + Seek,
 {
-    let mut zip = zip::ZipWriter::new(writer);
+    let mut zip_writer = zip::ZipWriter::new(writer);
     let options = FileOptions::default()
         .compression_method(method)
         .unix_permissions(0o755);
@@ -81,18 +85,39 @@ where
             continue;
         }
         println!("adding file {path:?} as {name:?} ...");
-        zip.start_file(name.to_str().unwrap(), options)?;
+        zip_writer.start_file(name.to_str().unwrap(), options)?;
         let mut f = File::open(path)?;
 
         f.read_to_end(&mut buffer)?;
-        zip.write_all(&buffer)?;
+        zip_writer.write_all(&buffer)?;
         buffer.clear();
     }
-    zip.finish()?;
+    zip_writer.finish()?;
     Result::Ok(())
 }
 
-fn process_table(
+async fn put_s3(path: &String, zip_path: &str) -> Result<(), S3Error> {
+    let creds = Credentials::new(Some(""), Some(""), None, None, None)?;
+
+    let bucket = Bucket::new("osm-roads-dumps", "eu-west-2".parse()?, creds)?;
+
+    println!("{:?}", bucket);
+
+    let mut f = File::open(zip_path).expect("Failed openning");
+
+    //println!("{}-{}", path, zip_path);
+
+    let test = b"I'm going to S3!";
+    let response_data = bucket.put_object(path, test).await?;
+
+    //let response_data = bucket.put_object_stream(&mut f, path).unwrap();
+
+    println!("{:?}", response_data);
+
+    return Ok(());
+}
+
+async fn process_table(
     table_name: &String,
     iso3_codes: &Vec<String>,
     temp_dir: &PathBuf,
@@ -101,7 +126,7 @@ fn process_table(
     let iso3_code = iso3_codes[0].clone();
 
     let roads_layer = format!("{}_trs_roads_osm", iso3_code.to_lowercase());
-    let streets_layer = format!("{iso3_code}_trs_streets_osm");
+    let _streets_layer = format!("{iso3_code}_trs_streets_osm");
 
     let output_dir_roads = temp_dir.join(&roads_layer);
 
@@ -109,6 +134,8 @@ fn process_table(
     let roads_sql = format!("SELECT * FROM {schema}.{table_name} where iso3 = '{iso3_code}'");
     let mut cmd = Command::new("ogr2ogr");
 
+    let zip_file = format!("{roads_layer}.zip");
+    /*
     let output = cmd
         .args([
             "-f",
@@ -117,6 +144,8 @@ fn process_table(
             &connection.conn,
             "-sql",
             &roads_sql,
+            "-nln",
+            &roads_layer,
         ])
         .output()
         .expect("Failed to execute process");
@@ -139,14 +168,17 @@ fn process_table(
         zip::CompressionMethod::Stored,
     )
     .unwrap();
+    */
+    put_s3(&roads_layer, &zip_file).await.unwrap();
 
     //.output()
     //.expect("Failed running command");
 
-    //println!("{:?}", output_dir_roads);
+    println!("{:?}", output_dir_roads);
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     env_logger::builder()
         .filter_level(log::LevelFilter::Info)
         .init();
@@ -161,9 +193,9 @@ fn main() {
         })
         .expect("Failed parsing config");
 
-    config.tables.iter().for_each(|(table_name, iso3_codes)| {
-        process_table(table_name, iso3_codes, &temp_dir, &config.connection)
-    });
+    for (table_name, iso3_codes) in config.tables {
+        process_table(&table_name, &iso3_codes, &temp_dir, &config.connection).await
+    }
 
     //log::info!("{:?}", config);
 }
