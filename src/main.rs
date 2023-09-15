@@ -86,14 +86,14 @@ where
         }
         println!("adding file {path:?} as {name:?} ...");
         zip_writer.start_file(name.to_str().unwrap(), options)?;
-        let mut f = File::open(path)?;
 
-        f.read_to_end(&mut buffer)?;
-        zip_writer.write_all(&buffer)?;
-        buffer.clear();
+        let mut f = File::open(path)?;
+        f.read_to_end(&mut buffer)
+            .and_then(|_| zip_writer.write_all(&buffer))
+            .map(|_| buffer.clear())?;
     }
     zip_writer.finish()?;
-    Result::Ok(())
+    Ok(())
 }
 
 async fn put_s3(path: &String, zip_path: &str) -> Result<(), S3Error> {
@@ -134,7 +134,7 @@ async fn process_table(
     let mut cmd = Command::new("ogr2ogr");
 
     let zip_file = format!("{roads_layer}.zip");
-    /*
+
     let output = cmd
         .args([
             "-f",
@@ -156,7 +156,6 @@ async fn process_table(
     let zip_file = format!("{roads_layer}.zip");
     let file = File::create(&zip_file).unwrap();
 
-    let path = Path::new(&zip_file);
     let walkdir = WalkDir::new(&roads_layer);
     let it = walkdir.into_iter();
 
@@ -167,7 +166,7 @@ async fn process_table(
         zip::CompressionMethod::Stored,
     )
     .unwrap();
-    */
+
     put_s3(&roads_layer, &zip_file).await.unwrap();
 
     //.output()
