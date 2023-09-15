@@ -1,9 +1,13 @@
-use std::io::{self, Write};
-use std::io::{Error, ErrorKind};
-use std::path::Path;
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::fs::read_to_string;
+use std::fs::File;
+use std::io::{self, Error, ErrorKind, Read, Seek, Write};
+use std::iter::Iterator;
+use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::{collections::HashMap, fs::read_to_string};
+use zip::result::ZipError;
+use zip::write::FileOptions;
+
 use toml::Value;
 use walkdir::{DirEntry, WalkDir};
 
@@ -22,32 +26,19 @@ impl<'de> Deserialize<'de> for OsmConn {
     {
         let connection_params = Value::deserialize(deserializer)?;
 
-        let host = connection_params
-            .get("host")
-            .and_then(|v| v.as_str())
-            .expect("Parameter host is not a string");
-        let user = connection_params
-            .get("user")
-            .and_then(|v| v.as_str())
-            .expect("Parameter user is not a string");
-        let password = connection_params
-            .get("password")
-            .and_then(|v| v.as_str())
-            .expect("Parameter password is not a string");
-        let port = connection_params
-            .get("port")
-            .and_then(|v| v.as_integer())
-            .expect("Parameter port error");
-        let name = connection_params
-            .get("name")
-            .and_then(|v| v.as_str())
-            .expect("Parameter name is not a string");
+        let db_fields = ["host", "user", "password", "name", "port", "schema"];
 
-        let schema = connection_params
-            .get("schema")
-            .and_then(|v| v.as_str())
-            .map(|v| v.to_string())
-            .expect("Parameter schema is not a string");
+        let items = db_fields
+            .iter()
+            .map(|i| {
+                connection_params
+                    .get(i)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_else(|| panic!("Failed parsing database params {i}"))
+            })
+            .collect::<Vec<&str>>();
+
+        let [host, user, password, name, port, schema] = items.as_slice() else { panic!("Failed to get all database values") };
 
         let ogr_conn = format!(
             r#"PG:dbname='{name}' host='{host}' port={port} user='{user}' password='{password}'"#
@@ -55,7 +46,7 @@ impl<'de> Deserialize<'de> for OsmConn {
 
         Ok(Self {
             conn: ogr_conn,
-            schema: schema,
+            schema: schema.to_string(),
         })
     }
 }
@@ -64,6 +55,41 @@ impl<'de> Deserialize<'de> for OsmConn {
 struct Config {
     tables: HashMap<String, Vec<String>>,
     connection: OsmConn,
+}
+
+fn zip_dir<T>(
+    it: &mut dyn Iterator<Item = DirEntry>,
+    prefix: &str,
+    writer: T,
+    method: zip::CompressionMethod,
+) -> zip::result::ZipResult<()>
+where
+    T: Write + Seek,
+{
+    let mut zip = zip::ZipWriter::new(writer);
+    let options = FileOptions::default()
+        .compression_method(method)
+        .unix_permissions(0o755);
+
+    let mut buffer = Vec::new();
+
+    for entry in it {
+        let path = entry.path();
+        let name = path.strip_prefix(Path::new(prefix)).unwrap();
+
+        if path.is_file() == false {
+            continue;
+        }
+        println!("adding file {path:?} as {name:?} ...");
+        zip.start_file(name.to_str().unwrap(), options)?;
+        let mut f = File::open(path)?;
+
+        f.read_to_end(&mut buffer)?;
+        zip.write_all(&buffer)?;
+        buffer.clear();
+    }
+    zip.finish()?;
+    Result::Ok(())
 }
 
 fn process_table(
@@ -100,13 +126,19 @@ fn process_table(
 
     // zip Element.
     let zip_file = format!("{roads_layer}.zip");
-    let file = File::create(zip_file).unwrap();
+    let file = File::create(&zip_file).unwrap();
 
     let path = Path::new(&zip_file);
-    let walkdir = WalkDir::new(roads_layer);
+    let walkdir = WalkDir::new(&roads_layer);
     let it = walkdir.into_iter();
 
-    //zip_dir(&mut it.filter_map(|e| e.ok()), src_dir, file, method);
+    zip_dir(
+        &mut it.filter_map(|e| e.ok()),
+        &roads_layer,
+        file,
+        zip::CompressionMethod::Stored,
+    )
+    .unwrap();
 
     //.output()
     //.expect("Failed running command");
